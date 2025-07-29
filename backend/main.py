@@ -1,56 +1,67 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
-import tensorflow as tf
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
-from tensorflow.keras.callbacks import ModelCheckpoint
+from werkzeug.utils import secure_filename
+import numpy as np
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
 
-DATA_DIR = "../dataset"
-IMAGE_SIZE = (50, 50)
-BATCH_SIZE = 32
-EPOCHS = 10
-MODEL_PATH = "../backend/model/model.h5"
+app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "http://localhost:5173"}})  # ← KEY FIX
 
-def build_model(input_shape):
-    model = Sequential([
-        Conv2D(32, (3, 3), activation='relu', input_shape=input_shape),
-        MaxPooling2D(2, 2),
-        Conv2D(64, (3, 3), activation='relu'),
-        MaxPooling2D(2, 2),
-        Flatten(),
-        Dense(128, activation='relu'),
-        Dropout(0.3),
-        Dense(1, activation='sigmoid')
-    ])
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    return model
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def train():
-    datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+model = load_model("model/model.h5")
+LABELS = ["benign", "malignant"]
 
-    train_gen = datagen.flow_from_directory(
-        DATA_DIR,
-        target_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        class_mode='binary',
-        subset='training'
-    )
 
-    val_gen = datagen.flow_from_directory(
-        DATA_DIR,
-        target_size=IMAGE_SIZE,
-        batch_size=BATCH_SIZE,
-        class_mode='binary',
-        subset='validation'
-    )
+# Home route
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({"message": "Breast Cancer Detection API is running!"})
 
-    input_shape = (IMAGE_SIZE[0], IMAGE_SIZE[1], 3)
-    model = build_model(input_shape)
+# Prediction route
+@app.route("/predict", methods=["POST"])
+def predict():
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file part"}), 400
 
-    checkpoint = ModelCheckpoint(MODEL_PATH, monitor='val_accuracy', save_best_only=True)
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No selected file"}), 400
 
-    model.fit(train_gen, validation_data=val_gen, epochs=EPOCHS, callbacks=[checkpoint])
-    print(f"✅ Model saved to {MODEL_PATH}")
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(filepath)
+
+        img = load_img(filepath, target_size=(64, 64))
+        img_array = img_to_array(img) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
+
+        prediction = model.predict(img_array)[0][0]
+        label = LABELS[int(prediction >= 0.5)]
+
+        return jsonify({
+            "prediction_score": float(prediction),
+            "predicted_class": label
+        })
+    except Exception as e:
+        print("❌ INTERNAL ERROR:", str(e))
+        return jsonify({"error": str(e)}), 500
+
+# @app.route('/predict', methods=['OPTIONS'])
+# def handle_options_predict():
+#     response = app.make_default_options_response()
+#     headers = response.headers
+
+#     # Adjust to your frontend URL:
+#     headers['Access-Control-Allow-Origin'] = 'http://localhost:5173'
+#     headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+#     headers['Access-Control-Allow-Headers'] = 'Content-Type'
+
+#     return response
 
 if __name__ == "__main__":
-    train()
+    app.run(debug=True, port=8000)
